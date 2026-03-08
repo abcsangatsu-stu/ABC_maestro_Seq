@@ -1,8 +1,8 @@
 # ABC Maestro SEQ — プロジェクト引き継ぎドキュメント
 
 **最終更新:** 2026-03-08
-**ステータス:** v7.0（Song cell span + repack位置保持 + Pool フィルタ）
-**最新ファイル:** `ABC_maestro_Seq_v7_0.html`（単一HTML、約7136行）
+**ステータス:** v7.0（Song cell span + rtCurStep独立進行 + Pool フィルタ）
+**最新ファイル:** `ABC_maestro_Seq_v7_0.html`（単一HTML、約7230行）
 **用途:** Oxi One MK2 用 LFOトリガーパターン作成ツール
 **関連ツール:** Shape→Sound v2.1（パターン生成 → Maestroへインポート）
 
@@ -162,17 +162,20 @@ CH1: `#e11d48`(赤), CH2: `#3b82f6`(青), CH3: `#22c55e`(緑), RT: `#06b6d4`(水
 
 - **Shift+クリック**: グリッド上で範囲選択（Back/RT両方）
 - **グループドラッグ**: 範囲選択状態でドラッグ → 位置関係保持のまま移動
-- **Cmd+V**: 選択ステップ位置にペースト（未選択時は次の空き）
+- **グループコピー**: Cmd+C で範囲選択をグループコピー（相対位置を保持）
+- **グループペースト**: Cmd+V で選択位置を基準に相対位置を保ったままペースト
+- **Cmd+V 単体**: 選択ステップ位置にペースト（未選択時は次の空き）
+- **Delete**: 範囲選択状態で一括削除
 - **RT新規ステップ**: 直前のステップの freq を自動継承
 - **repackEvents**: 位置保持型（ギャップを詰めずに重複分だけ後方シフト）
 
 ### Song cell Cmd+C/V/D
 
-| 操作 | ステップ選択あり | Song cell選択あり | どちらもなし |
-|------|----------------|------------------|-------------|
-| Cmd+C | セルコピー | Song cellコピー | パターン全体コピー |
-| Cmd+V | **選択位置に**ペースト | Song cell上書き | Song末尾に追加 |
-| Cmd+D | セル複製 | Song cell複製(span保持) | — |
+| 操作 | ステップ範囲選択 | ステップ単体選択 | Song cell選択 | どちらもなし |
+|------|----------------|----------------|--------------|-------------|
+| Cmd+C | **グループコピー** | セルコピー | Song cellコピー | パターン全体コピー |
+| Cmd+V | **グループペースト** | 選択位置にペースト | Song cell上書き | Song末尾に追加 |
+| Cmd+D | — | セル複製 | Song cell複製(span保持) | — |
 
 **clipboard排他制御（v7.0〜）**: cellClipboard設定時にpatternClipboard=null、逆も同様。
 
@@ -252,7 +255,35 @@ v7.0: 各イベントの元位置を保持し、重複分のみ後方シフト
 
 ---
 
-## 12. バージョン履歴
+## 12. 再生ロジック（v7.0〜 独立カウンター方式）
+
+### ステップカウンター
+
+```javascript
+curStep    // Back用。patLen到達で0リセット
+rtCurStep  // RT用（v7.0〜）。rtPatLen到達で0リセット
+// 両方ともsongTick()内で毎tick +1される
+```
+
+### 進行判定
+
+```
+Back: curStep >= patLen → curStep=0, songRepeatCount++
+RT:   rtCurStep >= rtPatLen → rtCurStep=0, rtSongRepeatCount++
+```
+
+BackとRTは**独立して進行**する。例：
+- Back 96/96/96 + RT 192/96
+- Back側が96消化×2回する間に、RT側は192を1回消化
+- Song欄のハイライトもそれぞれ独立して進む
+
+### オフラインレンダリング
+
+`renderSongOffline()` は元々 `rtOffset` でRT長を独立計算しているため変更不要。
+
+---
+
+## 13. バージョン履歴
 
 ### v6.0（2026-03-01）
 Phase 3+完了。全基本機能実装。
@@ -286,10 +317,13 @@ btn-row 3段化、音名ラベル常時表示、RTステップ別freq。
 - **Clipboard排他制御**: cellClipboard/patternClipboard相互クリア
 - **タブ名**: v5 → v7.0 に更新
 - **セル高さ**: 68px → 56px
+- **[P1修正] RT独立ステップカウンター `rtCurStep`**: BackとRTで異なるpatternLengthの場合にRT進行がズレる問題を修正。`rtCurStep` を新設し、RT進行を `rtCurStep >= rtPatLen` で独立判定
+- **[P2修正] span=1縮小時**: confirmでパターン長も元に戻すか選択可能に
+- **グループコピペ**: Shift+クリック範囲選択 → Cmd+C/V で位置関係保持のままコピペ
 
 ---
 
-## 13. 既知の注意点
+## 14. 既知の注意点
 
 1. `state`/`rtState` はエイリアス。パターン切替時に再バインド
 2. バック3ch既存コード（c<3ループ30箇所以上）は変更なし
@@ -301,10 +335,12 @@ btn-row 3段化、音名ラベル常時表示、RTステップ別freq。
 8. span変更時にパターンを自動複製するため、同じpatIdxを参照する他セルに影響しない
 9. `repackEvents` は位置保持型。隙間を詰めたい場合は明示的に fill gap を使用
 10. Pool表示は `shouldShowInPool()` でフィルタ（ブランク/同名/varySuffix）
+11. `curStep` と `rtCurStep` は独立カウンター。Back/RTで異なるpatternLengthをサポート
+12. `doStop(reset)` で `rtCurStep = 0` もリセットされる
 
 ---
 
-## 14. ロードマップ
+## 15. ロードマップ
 
 ```
 v6.0〜v7.0     ✅ 完了
@@ -314,12 +350,12 @@ Phase 5        📋 Undo / クリックノイズ除去 / Mode 2 / 3連混在
 
 ---
 
-## 15. 外部依存
+## 16. 外部依存
 
 lamejs (MP3エンコード) のみ。Vanilla JS、単一HTML。
 
 ---
 
-## 16. テーマ一覧
+## 17. テーマ一覧
 
 dark, teal, ocean, light, **sakura**(デフォルト), mint, sky, cream, lavender, peach
