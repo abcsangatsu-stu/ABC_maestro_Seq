@@ -1054,7 +1054,7 @@ function renamePatternBase(oldBase, newBase) {
 function refreshPatternNames() {
   for (var i = 0; i < patterns.length; i++) {
     var p = patterns[i];
-    if (!p.baseName) p.baseName = p.name.charAt(0) || String.fromCharCode(65 + i);
+    if (p.baseName === undefined || p.baseName === null) p.baseName = (p.name && p.name.length > 0) ? p.name.charAt(0) : String.fromCharCode(65 + i);
     if (!p.varySuffix) p.varySuffix = '';
     p.name = p.baseName + p.varySuffix;
   }
@@ -1600,8 +1600,10 @@ function buildChannelBlocks() {
           '<button class="audio-mode-btn' + (globalAudioMode[c] ? '' : ' local') + '" onclick="toggleAudioMode(' + c + ')">' + (globalAudioMode[c] ? 'G' : 'L') + '</button>' +
           '<span class="freq-label">Hz</span>' +
           '<input type="range" class="freq-range" id="freq' + c + '" min="50" max="2000" value="' + getChAudio(c).freq + '" oninput="setFreq(' + c + ', this.value)">' +
-          '<input type="number" class="freq-input" id="freqv' + c + '" min="50" max="2000" value="' + getChAudio(c).freq + '" onchange="setFreqInput(' + c + ', this.value)">' +
+          '<input type="number" class="freq-input" id="freqv' + c + '" min="50" max="2000" step="0.1" value="' + (freqQuantize[c] ? getChAudio(c).freq.toFixed(1) : Math.round(getChAudio(c).freq)) + '" onchange="setFreqInput(' + c + ', this.value)">' +
           '<button class="fill-gap-btn" onclick="toggleFreqQuantize(' + c + ')" title="Snap to note" style="padding:2px 5px;font-size:0.65em;margin-left:2px;' + (freqQuantize[c] ? 'background:var(--accent);color:var(--accent-text);border-color:var(--accent)' : '') + '">♪</button>' +
+          '<button class="fill-gap-btn" onclick="stepFreq(' + c + ',-1)" title="Note down" style="padding:1px 4px;font-size:0.6em;margin-left:1px">▼</button>' +
+          '<button class="fill-gap-btn" onclick="stepFreq(' + c + ',1)" title="Note up" style="padding:1px 4px;font-size:0.6em">▲</button>' +
           '<span id="fqnote' + c + '" style="font-size:0.6em;color:var(--freq-color);min-width:24px;margin-left:2px">' + (freqQuantize[c] ? freqToNoteName(getChAudio(c).freq) : '') + '</span>' +
         '</div>' +
         '<div class="vol-wrap">' +
@@ -2288,8 +2290,10 @@ function buildRTChannelBlock() {
         '<button class="audio-mode-btn' + (globalAudioMode[3] ? '' : ' local') + '" onclick="toggleAudioMode(3)">' + (globalAudioMode[3] ? 'G' : 'L') + '</button>' +
         '<span class="freq-label">Hz</span>' +
         '<input type="range" class="freq-range" id="freqrt" min="50" max="2000" value="' + audio.freq + '" oninput="setRTFreq(this.value)">' +
-        '<input type="number" class="freq-input" id="freqvrt" min="50" max="2000" value="' + audio.freq + '" onchange="setRTFreqInput(this.value)">' +
+        '<input type="number" class="freq-input" id="freqvrt" min="50" max="2000" step="0.1" value="' + (freqQuantize[3] ? audio.freq.toFixed(1) : Math.round(audio.freq)) + '" onchange="setRTFreqInput(this.value)">' +
         '<button class="fill-gap-btn" onclick="toggleRTFreqQuantize()" title="Snap to note" style="padding:2px 5px;font-size:0.65em;margin-left:2px;' + (freqQuantize[3] ? 'background:var(--accent);color:var(--accent-text);border-color:var(--accent)' : '') + '">♪</button>' +
+        '<button class="fill-gap-btn" onclick="stepRTFreq(-1)" title="Note down" style="padding:1px 4px;font-size:0.6em;margin-left:1px">▼</button>' +
+        '<button class="fill-gap-btn" onclick="stepRTFreq(1)" title="Note up" style="padding:1px 4px;font-size:0.6em">▲</button>' +
         '<span id="fqnoter" style="font-size:0.6em;color:var(--freq-color);min-width:24px;margin-left:2px">' + (freqQuantize[3] ? freqToNoteName(audio.freq) : '') + '</span>' +
       '</div>' +
       '<div class="vol-wrap">' +
@@ -2518,8 +2522,8 @@ function onRTDurSelect(dur) {
   } else { ch.brushDur = dur; }
 }
 
-function setRTFreq(val) { var v = Math.max(50, Math.min(2000, parseInt(val) || 50)); if (freqQuantize[3]) v = quantizeFreq(v); if (globalAudioMode[3]) rtGlobalAudio.freq = v; else rtState[0].freq = v; var el = document.getElementById('freqvrt'); if (el) el.value = Math.round(v); updateRTFreqNoteLabel(v); }
-function setRTFreqInput(val) { var v = Math.max(50, Math.min(2000, parseInt(val) || 50)); if (freqQuantize[3]) v = quantizeFreq(v); if (globalAudioMode[3]) rtGlobalAudio.freq = v; else rtState[0].freq = v; var el = document.getElementById('freqrt'); if (el) el.value = Math.round(v); var el2 = document.getElementById('freqvrt'); if (el2) el2.value = Math.round(v); updateRTFreqNoteLabel(v); }
+function setRTFreq(val) { var v = Math.max(50, Math.min(2000, parseFloat(val) || 50)); if (freqQuantize[3]) v = quantizeFreq(v); if (globalAudioMode[3]) rtGlobalAudio.freq = v; else rtState[0].freq = v; var el = document.getElementById('freqvrt'); if (el) el.value = freqQuantize[3] ? v.toFixed(1) : Math.round(v); updateRTFreqNoteLabel(v); }
+function setRTFreqInput(val) { var v = Math.max(50, Math.min(2000, parseFloat(val) || 50)); if (freqQuantize[3]) v = quantizeFreq(v); if (globalAudioMode[3]) rtGlobalAudio.freq = v; else rtState[0].freq = v; var el = document.getElementById('freqrt'); if (el) el.value = Math.round(v); var el2 = document.getElementById('freqvrt'); if (el2) el2.value = freqQuantize[3] ? v.toFixed(1) : Math.round(v); updateRTFreqNoteLabel(v); }
 function updateRTFreqNoteLabel(freq) { var el = document.getElementById('fqnoter'); if (el) el.textContent = freqQuantize[3] ? freqToNoteName(freq) : ''; }
 function toggleRTFreqQuantize() {
   freqQuantize[3] = !freqQuantize[3];
@@ -3310,22 +3314,22 @@ function onDurSelect(c, dur) {
 }
 
 function setFreq(c, val) {
-  var v = Math.max(50, Math.min(2000, parseInt(val) || 50));
+  var v = Math.max(50, Math.min(2000, parseFloat(val) || 50));
   if (freqQuantize[c]) v = quantizeFreq(v);
   if (globalAudioMode[c]) { globalAudio[c].freq = v; } else { state[c].freq = v; }
   var fInput = document.getElementById('freqv' + c);
-  if (fInput) fInput.value = Math.round(v);
+  if (fInput) fInput.value = freqQuantize[c] ? v.toFixed(1) : Math.round(v);
   updateFreqNoteLabel(c, v);
 }
 
 function setFreqInput(c, val) {
-  var v = Math.max(50, Math.min(2000, parseInt(val) || 50));
+  var v = Math.max(50, Math.min(2000, parseFloat(val) || 50));
   if (freqQuantize[c]) v = quantizeFreq(v);
   if (globalAudioMode[c]) { globalAudio[c].freq = v; } else { state[c].freq = v; }
   var fSlider = document.getElementById('freq' + c);
   if (fSlider) fSlider.value = Math.round(v);
   var fInput = document.getElementById('freqv' + c);
-  if (fInput) fInput.value = Math.round(v);
+  if (fInput) fInput.value = freqQuantize[c] ? v.toFixed(1) : Math.round(v);
   updateFreqNoteLabel(c, v);
 }
 
@@ -3337,13 +3341,38 @@ function updateFreqNoteLabel(c, freq) {
 function toggleFreqQuantize(c) {
   freqQuantize[c] = !freqQuantize[c];
   if (freqQuantize[c]) {
-    // Snap current freq to nearest note
     var curFreq = globalAudioMode[c] ? globalAudio[c].freq : state[c].freq;
-    setFreqInput(c, Math.round(curFreq));
+    setFreqInput(c, curFreq);
   }
   buildUI();
-  if (c < 3) {} else { buildRTUI(); }
+  if (c >= 3) { buildRTUI(); }
   document.getElementById('status').textContent = (c < 3 ? CNAME[c] : RT_CNAME) + ' freq quantize: ' + (freqQuantize[c] ? 'ON' : 'OFF');
+}
+
+// Step frequency up/down by semitone
+function stepFreq(c, dir) {
+  var curFreq = globalAudioMode[c] ? globalAudio[c].freq : state[c].freq;
+  var midi = Math.round(12 * Math.log2(curFreq / 440) + 69);
+  midi = Math.max(21, Math.min(108, midi + dir));
+  var newFreq = 440 * Math.pow(2, (midi - 69) / 12);
+  newFreq = Math.max(50, Math.min(2000, newFreq));
+  if (globalAudioMode[c]) { globalAudio[c].freq = newFreq; } else { state[c].freq = newFreq; }
+  var fSlider = document.getElementById('freq' + c);
+  if (fSlider) fSlider.value = Math.round(newFreq);
+  var fInput = document.getElementById('freqv' + c);
+  if (fInput) fInput.value = newFreq.toFixed(1);
+  updateFreqNoteLabel(c, newFreq);
+}
+function stepRTFreq(dir) {
+  var curFreq = globalAudioMode[3] ? rtGlobalAudio.freq : rtState[0].freq;
+  var midi = Math.round(12 * Math.log2(curFreq / 440) + 69);
+  midi = Math.max(21, Math.min(108, midi + dir));
+  var newFreq = 440 * Math.pow(2, (midi - 69) / 12);
+  newFreq = Math.max(50, Math.min(2000, newFreq));
+  if (globalAudioMode[3]) { rtGlobalAudio.freq = newFreq; } else { rtState[0].freq = newFreq; }
+  var el = document.getElementById('freqrt'); if (el) el.value = Math.round(newFreq);
+  var el2 = document.getElementById('freqvrt'); if (el2) el2.value = newFreq.toFixed(1);
+  updateRTFreqNoteLabel(newFreq);
 }
 
 function setVolume(c, val) {
@@ -3914,7 +3943,7 @@ function saveProject() {
     quant: getQuant(),
     projectName: projectName,
     patterns: patterns.map(function(p) {
-      return { name: p.name, channels: serializeChannels(p.channels), baseName: p.baseName || p.name.charAt(0), varySuffix: p.varySuffix || '', patternLength: p.patternLength || 128 };
+      return { name: p.name, channels: serializeChannels(p.channels), baseName: p.baseName !== undefined ? p.baseName : p.name, varySuffix: p.varySuffix || '', patternLength: p.patternLength || 128 };
     }),
     song: song.slice(),
     songLoop: songLoop,
@@ -3924,7 +3953,7 @@ function saveProject() {
     theme: currentTheme,
     // RT data
     rtPatterns: rtPatterns.map(function(p) {
-      return { name: p.name, channels: serializeChannels(p.channels), baseName: p.baseName || p.name.charAt(0), varySuffix: p.varySuffix || '', patternLength: p.patternLength || 128, coverBackFrom: p.coverBackFrom || -1, coverBackTo: p.coverBackTo || -1 };
+      return { name: p.name, channels: serializeChannels(p.channels), baseName: p.baseName !== undefined ? p.baseName : p.name, varySuffix: p.varySuffix || '', patternLength: p.patternLength || 128, coverBackFrom: p.coverBackFrom !== undefined && p.coverBackFrom !== null ? p.coverBackFrom : -1, coverBackTo: p.coverBackTo !== undefined && p.coverBackTo !== null ? p.coverBackTo : -1 };
     }),
     rtSong: rtSong.slice(),
     currentRTPatternIdx: currentRTPatternIdx,
@@ -4008,8 +4037,8 @@ function loadProject(json) {
       // Version 3: multi-pattern + song
       patterns = [];
       proj.patterns.forEach(function(p) {
-        var pat = makePattern(p.name || 'A');
-        pat.baseName = p.baseName || p.name.charAt(0) || 'A';
+        var pat = makePattern(p.name !== undefined ? p.name : 'A');
+        pat.baseName = p.baseName !== undefined ? p.baseName : (p.name !== undefined ? (p.name.length > 0 ? p.name.charAt(0) : '') : 'A');
         pat.varySuffix = p.varySuffix || '';
         pat.patternLength = p.patternLength || 128;
         loadChannels(p.channels, pat.channels);
@@ -4056,7 +4085,7 @@ function loadProject(json) {
       globalAudioMode = [true, true, true, true];
       for (var c = 0; c < 3; c++) {
         var src = patterns[0].channels[c];
-        globalAudio[c] = { freq: src.freq || CARRIER_FREQS[c], volume: src.volume || 0.5, pan: src.pan || 0 };
+        globalAudio[c] = { freq: src.freq !== undefined ? src.freq : CARRIER_FREQS[c], volume: src.volume !== undefined ? src.volume : 0.5, pan: src.pan !== undefined ? src.pan : 0 };
       }
     }
     if (proj.theme && COLOR_THEMES[proj.theme]) {
@@ -4067,12 +4096,12 @@ function loadProject(json) {
     if (proj.rtPatterns && proj.rtPatterns.length > 0) {
       rtPatterns = [];
       proj.rtPatterns.forEach(function(p) {
-        var pat = makeRTPattern(p.name || 'RA');
-        pat.baseName = p.baseName || p.name || 'RA';
+        var pat = makeRTPattern(p.name !== undefined ? p.name : 'RA');
+        pat.baseName = p.baseName !== undefined ? p.baseName : (p.name || 'RA');
         pat.varySuffix = p.varySuffix || '';
         pat.patternLength = p.patternLength || 128;
-        pat.coverBackFrom = p.coverBackFrom || -1;
-        pat.coverBackTo = p.coverBackTo || -1;
+        pat.coverBackFrom = p.coverBackFrom !== undefined && p.coverBackFrom !== null ? p.coverBackFrom : -1;
+        pat.coverBackTo = p.coverBackTo !== undefined && p.coverBackTo !== null ? p.coverBackTo : -1;
         // Load RT channel (index 0 only)
         if (p.channels && p.channels[0]) {
           var avail = getAvailableDurs();
@@ -4590,19 +4619,17 @@ document.addEventListener('keydown', function(e) {
         }
       }
     } else if (patternClipboard) {
-      // Check if song cell is selected → overwrite that cell's pattern content
-      if (patternClipboard.type === 'rt' && selectedRTSongCell >= 0 && selectedRTSongCell < rtSong.length) {
-        var targetIdx = rtSong[selectedRTSongCell].patIdx;
+      // Song cell selected → overwrite that cell's pattern content
+      if (lastSongFocus === 'rt' && patternClipboard.type === 'rt' && selectedRTSongCell >= 0 && selectedRTSongCell < rtSong.length) {
         var copy = JSON.parse(JSON.stringify(patternClipboard.data));
         var naming = nextRTCopyName(patternClipboard.data);
-        // Overwrite the target pattern's content but create new pattern to preserve original
         copy.name = naming.name; copy.baseName = naming.baseName; copy.varySuffix = naming.varySuffix;
         rtPatterns.push(copy);
         rtSong[selectedRTSongCell].patIdx = rtPatterns.length - 1;
         switchToRTPattern(rtPatterns.length - 1);
         renderRTSongLane(); renderPatternPool();
         document.getElementById('status').textContent = 'RT Song cell overwritten → ' + copy.name;
-      } else if (patternClipboard.type === 'back' && selectedSongCell >= 0 && selectedSongCell < song.length) {
+      } else if (lastSongFocus === 'back' && patternClipboard.type === 'back' && selectedSongCell >= 0 && selectedSongCell < song.length) {
         var copy = JSON.parse(JSON.stringify(patternClipboard.data));
         var naming = nextCopyName(patternClipboard.data);
         copy.name = naming.name; copy.baseName = naming.baseName; copy.varySuffix = naming.varySuffix;
@@ -4612,6 +4639,7 @@ document.addEventListener('keydown', function(e) {
         renderSongLane(); renderPatternPool();
         document.getElementById('status').textContent = 'Song cell overwritten → ' + copy.name;
       } else if (patternClipboard.type === 'rt') {
+        // No song cell selected: append to end
         var copy = JSON.parse(JSON.stringify(patternClipboard.data));
         var naming = nextRTCopyName(patternClipboard.data);
         copy.name = naming.name; copy.baseName = naming.baseName; copy.varySuffix = naming.varySuffix;
@@ -5655,7 +5683,7 @@ function varyMultiPattern(srcBase, q, max, avail, transformFn, numPats, varyType
 // ============================================================
 function varyCreatePattern(channels, varyType) {
   var suffix = (varyType && VARY_SUFFIX[varyType]) ? VARY_SUFFIX[varyType] : '';
-  var srcBase = patterns[currentPatternIdx].baseName || patterns[currentPatternIdx].name.charAt(0);
+  var srcBase = patterns[currentPatternIdx].baseName !== undefined && patterns[currentPatternIdx].baseName !== '' ? patterns[currentPatternIdx].baseName : (patterns[currentPatternIdx].name || 'A');
   var candidateName = srcBase + suffix;
   // Deduplicate: if name already exists, add number
   var existing = {};
