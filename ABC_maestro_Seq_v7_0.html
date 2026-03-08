@@ -961,8 +961,31 @@ function applySpanChange(entry, songIdx, newSpan, isRT) {
   var srcPat = patBank[entry.patIdx];
   if (!srcPat) return;
 
-  if (newSpan === 1) {
-    // Shrinking to span=1: keep current pattern as-is
+  if (newSpan === 1 && oldSpan > 1) {
+    // Shrinking to span=1: ask if user wants to truncate
+    var curLen = srcPat.patternLength || 128;
+    var baseLen = Math.round(curLen / oldSpan);
+    if (curLen > baseLen) {
+      if (confirm('パターン長を ' + curLen + ' → ' + baseLen + ' に戻しますか？\n後半のデータは削除されます。')) {
+        // Clone, truncate, and replace
+        var clone = JSON.parse(JSON.stringify(srcPat));
+        var chCount = isRT ? 1 : 3;
+        for (var c = 0; c < chCount; c++) {
+          clone.channels[c].steps = clone.channels[c].steps.slice(0, baseLen);
+          clone.channels[c].count = baseLen;
+        }
+        clone.patternLength = baseLen;
+        clone.name = clone.baseName || clone.name || '';
+        clone.varySuffix = '';
+        patBank.push(clone);
+        entry.patIdx = patBank.length - 1;
+        if (isRT) switchToRTPattern(entry.patIdx);
+        else switchToPattern(entry.patIdx);
+      }
+      // If declined, keep current pattern but still set span=1
+    }
+    entry.span = 1;
+  } else if (newSpan === 1) {
     entry.span = 1;
   } else {
     // Determine base length
@@ -4102,6 +4125,7 @@ function doSongPlay() {
     // RT starts from same position
     rtSongPos = Math.min(songPlayhead, rtSong.length - 1);
     rtSongRepeatCount = 0;
+    rtCurStep = 0;
     
     // Switch to starting patterns
     var startPat = song[songPos] ? song[songPos].patIdx : 0;
@@ -4117,6 +4141,7 @@ function doSongPlay() {
 
 // RT song position tracking
 var rtSongPos = 0, rtSongRepeatCount = 0;
+var rtCurStep = 0; // v7.0: independent RT step counter
 
 function songTick() {
   if (!songPlaying || songPos >= song.length) {
@@ -4147,14 +4172,14 @@ function songTick() {
     }
   }
 
-  // RT channel playback (parallel song)
+  // RT channel playback (parallel song) — uses independent rtCurStep
   if (rtSongPos < rtSong.length) {
     var rtEntry = rtSong[rtSongPos];
     var rtPat = rtPatterns[rtEntry.patIdx];
     if (rtPat) {
       var rtChannel = rtPat.channels[0];
       var rtPatLen = rtPat.patternLength || 128;
-      var rtS = curStep % rtChannel.count;
+      var rtS = rtCurStep % rtChannel.count;
       var rtStep = rtChannel.steps[rtS];
       if (rtStep && rtStep.on && !chMute[3]) {
         var rtDurSec = durToSteps(rtStep.dur) * stepIntervalMs() / 1000;
@@ -4182,6 +4207,7 @@ function songTick() {
   document.getElementById('status').textContent = statusText;
 
   curStep++;
+  rtCurStep++;
 
   // Check if back pattern completed one cycle
   if (curStep >= patLen) {
@@ -4198,13 +4224,13 @@ function songTick() {
     }
   }
 
-  // Check if RT pattern completed one cycle
+  // Check if RT pattern completed one cycle (independent of Back)
   if (rtSongPos < rtSong.length) {
     var rtEntry2 = rtSong[rtSongPos];
     var rtPat2 = rtPatterns[rtEntry2.patIdx];
     var rtPatLen2 = rtPat2 ? (rtPat2.patternLength || 128) : 128;
-    if (curStep + 1 >= patLen) {
-      
+    if (rtCurStep >= rtPatLen2) {
+      rtCurStep = 0;
       rtSongRepeatCount++;
       if (rtSongRepeatCount >= rtEntry2.repeat) {
         rtSongRepeatCount = 0;
@@ -4233,7 +4259,7 @@ function doStop(reset) {
   document.getElementById('btnPlay').classList.remove('playing');
   document.getElementById('btnSongPlay').innerHTML = '<span style="color:#e11d48">&#9654;</span>';
   document.getElementById('btnSongPlay').classList.remove('playing');
-  if (reset) { curStep = 0; songPos = 0; songRepeatCount = 0;  rtSongPos = 0; rtSongRepeatCount = 0; }
+  if (reset) { curStep = 0; songPos = 0; songRepeatCount = 0;  rtSongPos = 0; rtSongRepeatCount = 0; rtCurStep = 0; }
   document.getElementById('status').textContent = 'クリックで入力 | 上段で波形/DUR変更';
 }
 
@@ -4984,27 +5010,52 @@ document.addEventListener('keydown', function(e) {
     return;
   }
 
-  // Cmd+C: copy selected cell (if any) or pattern — respects lastSongFocus for back vs RT
+  // Cmd+C: copy selected cell(s) or pattern — respects lastSongFocus for back vs RT
   if ((e.metaKey || e.ctrlKey) && e.key === 'c') {
-    // Check RT step first if RT is focused
+    // Check RT range selection first
+    if (rtRangeSelection.steps.length > 0) {
+      var ch = rtState[0];
+      var anchor = ch.selectedStep >= 0 ? ch.selectedStep : rtRangeSelection.steps[0];
+      var group = rtRangeSelection.steps.map(function(s) {
+        return { offset: s - anchor, wave: ch.steps[s].wave, dur: ch.steps[s].dur, freq: ch.steps[s].freq != null ? ch.steps[s].freq : null };
+      });
+      cellClipboard = { channel: 'rt', group: group };
+      patternClipboard = null;
+      document.getElementById('status').textContent = group.length + ' RT cells copied';
+      e.preventDefault(); return;
+    }
+    // Check back range selection
+    if (rangeSelection.channel >= 0 && rangeSelection.steps.length > 0) {
+      var rc = rangeSelection.channel;
+      var ch = state[rc];
+      var anchor = ch.selectedStep >= 0 ? ch.selectedStep : rangeSelection.steps[0];
+      var group = rangeSelection.steps.map(function(s) {
+        return { offset: s - anchor, wave: ch.steps[s].wave, dur: ch.steps[s].dur };
+      });
+      cellClipboard = { channel: rc, group: group };
+      patternClipboard = null;
+      document.getElementById('status').textContent = group.length + ' cells copied';
+      e.preventDefault(); return;
+    }
+    // Check RT single step
     if (lastSongFocus === 'rt' && rtState[0].selectedStep >= 0) {
       var rs = rtState[0].selectedStep;
       var rstep = rtState[0].steps[rs];
       if (rstep && rstep.on) {
         cellClipboard = { wave: rstep.wave, dur: rstep.dur, freq: rstep.freq != null ? rstep.freq : null, channel: 'rt' };
-        patternClipboard = null; // Clear pattern clipboard when copying cell
+        patternClipboard = null;
         document.getElementById('status').textContent = 'RT cell copied (wave: ' + rstep.wave + ', dur: ' + rstep.dur + ')';
         e.preventDefault(); return;
       }
     }
-    // Check back step
+    // Check back single step
     for (var c = 0; c < 3; c++) {
       if (state[c].selectedStep >= 0) {
         var s = state[c].selectedStep;
         var step = state[c].steps[s];
         if (step && step.on) {
           cellClipboard = { wave: step.wave, dur: step.dur, channel: c };
-          patternClipboard = null; // Clear pattern clipboard when copying cell
+          patternClipboard = null;
           document.getElementById('status').textContent = 'Cell copied (wave: ' + step.wave + ', dur: ' + step.dur + ')';
           e.preventDefault(); return;
         }
@@ -5030,11 +5081,57 @@ document.addEventListener('keydown', function(e) {
     e.preventDefault(); return;
   }
 
-  // Cmd+V: paste cell or pattern — respects RT
+  // Cmd+V: paste cell(s) or pattern — respects RT
   if ((e.metaKey || e.ctrlKey) && e.key === 'v') {
     if (cellClipboard) {
-      if (cellClipboard.channel === 'rt') {
-        // Paste into RT: prefer selected step, fallback to next free
+      if (cellClipboard.group) {
+        // Group paste: paste multiple cells with relative positions
+        var group = cellClipboard.group;
+        if (cellClipboard.channel === 'rt') {
+          var ch = rtState[0];
+          var pasteAnchor = ch.selectedStep >= 0 ? ch.selectedStep : getRTNextFreeStep();
+          if (pasteAnchor >= 0 && pasteAnchor < ch.count) {
+            var canPaste = true;
+            for (var g = 0; g < group.length; g++) {
+              var pos = pasteAnchor + group[g].offset;
+              if (pos < 0 || pos >= ch.count) { canPaste = false; break; }
+            }
+            if (canPaste) {
+              for (var g = 0; g < group.length; g++) {
+                var pos = pasteAnchor + group[g].offset;
+                ch.steps[pos].on = true;
+                ch.steps[pos].wave = group[g].wave;
+                ch.steps[pos].dur = group[g].dur;
+                ch.steps[pos].freq = group[g].freq != null ? group[g].freq : null;
+              }
+              selectRTStep(pasteAnchor);
+              document.getElementById('status').textContent = group.length + ' RT cells pasted';
+            }
+          }
+        } else {
+          var cc = cellClipboard.channel;
+          var ch = state[cc];
+          var pasteAnchor = ch.selectedStep >= 0 ? ch.selectedStep : getNextFreeStep(cc);
+          if (pasteAnchor >= 0 && pasteAnchor < ch.count) {
+            var canPaste = true;
+            for (var g = 0; g < group.length; g++) {
+              var pos = pasteAnchor + group[g].offset;
+              if (pos < 0 || pos >= ch.count) { canPaste = false; break; }
+            }
+            if (canPaste) {
+              for (var g = 0; g < group.length; g++) {
+                var pos = pasteAnchor + group[g].offset;
+                ch.steps[pos].on = true;
+                ch.steps[pos].wave = group[g].wave;
+                ch.steps[pos].dur = group[g].dur;
+              }
+              selectStep(cc, pasteAnchor);
+              document.getElementById('status').textContent = group.length + ' cells pasted';
+            }
+          }
+        }
+      } else if (cellClipboard.channel === 'rt') {
+        // Single RT cell paste
         var pastePos = rtState[0].selectedStep >= 0 ? rtState[0].selectedStep : getRTNextFreeStep();
         if (pastePos >= 0 && pastePos < rtState[0].count) {
           var rstep = rtState[0].steps[pastePos];
@@ -5052,8 +5149,8 @@ document.addEventListener('keydown', function(e) {
           }
         }
       } else {
+        // Single back cell paste
         var cc = cellClipboard.channel;
-        // Prefer selected step, fallback to next free
         var pastePos = state[cc].selectedStep >= 0 ? state[cc].selectedStep : getNextFreeStep(cc);
         if (pastePos >= 0 && pastePos < state[cc].count) {
           var step = state[cc].steps[pastePos];
