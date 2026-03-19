@@ -203,6 +203,20 @@
     border-top: 6px solid #3b82f6; z-index: 3;
   }
 
+  /* Interleaved song layout (v7.2) */
+  .song-row-group { margin-bottom: 4px; padding-bottom: 3px; border-bottom: 1px solid color-mix(in srgb, var(--border) 40%, transparent); }
+  .song-row-group:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+  .song-row { display: flex; align-items: center; min-height: 58px; }
+  .song-row + .song-row { margin-top: 2px; }
+  .song-row-label { font-size: 0.55em; color: var(--text-muted); letter-spacing: 1px; width: 22px; flex-shrink: 0; text-align: right; padding-right: 4px; font-weight: bold; user-select: none; }
+  .song-row-label.rt-label { color: var(--color-rt); }
+  .song-row-cells { display: flex; align-items: center; gap: 0; flex: 1; min-width: 0; flex-wrap: wrap; }
+  .song-row-sum { font-size: 0.6em; color: var(--text-muted); padding-left: 6px; font-family: monospace; white-space: nowrap; flex-shrink: 0; min-width: 36px; text-align: right; }
+  .sc-steps { font-size: 0.5em; color: var(--text-muted); font-family: monospace; line-height: 1; opacity: 0.7; }
+  .song-totals { font-size: 0.7em; font-family: monospace; color: var(--text-muted); display: flex; gap: 10px; align-items: center; }
+  .song-totals .total-match { color: #22c55e; }
+  .song-totals .total-mismatch { color: #e11d48; font-weight: bold; }
+
   /* Pattern pool */
   .pattern-pool {
     display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
@@ -649,12 +663,10 @@
 <div class="song-section">
   <div class="song-header-row">
     <span class="song-section-label">SONG</span>
+    <div class="song-totals" id="songTotals"></div>
     <div class="song-color-dropdown" id="songColorDropdown"></div>
   </div>
-  <div class="song-lane" id="songLane"></div>
-  <div class="rt-song-inline">
-    <div class="song-lane" id="rtSongLane"></div>
-  </div>
+  <div id="songInterleaved"></div>
   <div class="pattern-pool" id="patternPool">
     <span class="pattern-pool-label">POOL</span>
   </div>
@@ -1142,13 +1154,10 @@ function startSpanDrag(entry, songIdx, isRT, startEvt) {
     var dx = e.clientX - startX;
     var newSpan = Math.max(1, Math.min(8, Math.round(startSpan + dx / (baseW + gap))));
     // Preview width only (don't apply yet)
-    var laneId = isRT ? 'rtSongLane' : 'songLane';
-    var cells = document.getElementById(laneId);
-    if (cells) {
-      var cellEls = cells.querySelectorAll('.song-cell');
-      if (cellEls[songIdx]) {
-        cellEls[songIdx].style.width = (baseW * newSpan + gap * (newSpan - 1)) + 'px';
-      }
+    var _sdAttr = isRT ? 'data-rt-song-idx' : 'data-back-song-idx';
+    var _sdCell = document.querySelector('[' + _sdAttr + '="' + songIdx + '"]');
+    if (_sdCell) {
+      _sdCell.style.width = (baseW * newSpan + gap * (newSpan - 1)) + 'px';
     }
     document.getElementById('status').textContent = 'span: ' + newSpan;
   }
@@ -1501,6 +1510,463 @@ function drawWaveformPreview(c) {
 }
 
 // ============================================================
+//  INTERLEAVED SONG RENDERING (v7.2)
+// ============================================================
+function getEffectiveSteps(entry, isRT) {
+  var pats = isRT ? rtPatterns : patterns;
+  var pat = pats[entry.patIdx];
+  return pat ? pat.patternLength * entry.repeat : 0;
+}
+
+function updateSongTotals() {
+  var backTotal = song.reduce(function(s, e) { return s + getEffectiveSteps(e, false); }, 0);
+  var rtTotal = rtSong.reduce(function(s, e) { return s + getEffectiveSteps(e, true); }, 0);
+  var el = document.getElementById('songTotals');
+  if (!el) return;
+  var match = backTotal === rtTotal;
+  el.innerHTML = '<span>B:' + backTotal + '</span><span>R:' + rtTotal + '</span>' +
+    (match ? '<span class="total-match">\u2713</span>' : '<span class="total-mismatch">\u25B2' + Math.abs(backTotal - rtTotal) + '</span>');
+}
+
+function createSongGap(pos) {
+  var gap = document.createElement('div');
+  gap.className = 'song-gap';
+  gap.setAttribute('data-gap-pos', pos);
+  if (loopPoints.indexOf(pos) >= 0) {
+    var lp = document.createElement('div');
+    lp.className = 'song-loop-point';
+    if (loopPoints.length >= 2) lp.classList.add('loop-active');
+    lp.addEventListener('click', (function(p) {
+      return function(e) { e.stopPropagation(); removeLoopPoint(p); };
+    })(pos));
+    lp.addEventListener('mousedown', (function(p) {
+      return function(e) { if (e.button === 0) { e.stopPropagation(); startLoopPointDrag(p, e); } };
+    })(pos));
+    gap.appendChild(lp);
+  } else {
+    gap.addEventListener('dblclick', (function(p) {
+      return function(e) { e.stopPropagation(); addLoopPoint(p); };
+    })(pos));
+  }
+  return gap;
+}
+
+function createSongCell(entry, idx, isRT) {
+  var songArr = isRT ? rtSong : song;
+  var pats = isRT ? rtPatterns : patterns;
+  var selCell = isRT ? selectedRTSongCell : selectedSongCell;
+  var multiSel = isRT ? rtSongMultiSelect : songMultiSelect;
+  var pat = pats[entry.patIdx];
+
+  var cell = document.createElement('div');
+  cell.className = 'song-cell';
+  if (isRT) cell.classList.add('rt-song-cell');
+  cell.setAttribute(isRT ? 'data-rt-song-idx' : 'data-back-song-idx', String(idx));
+
+  if (entry.sectionColor && entry.sectionColor !== 'none') cell.classList.add('sec-' + entry.sectionColor);
+  if (idx === selCell) cell.classList.add('active');
+  if (multiSel.indexOf(idx) >= 0) cell.classList.add('multi-selected');
+  if (idx === songPlayhead) cell.classList.add('song-playhead');
+
+  // Group styling
+  if (entry.groupId) {
+    cell.classList.add('grouped');
+    var isStart = idx === 0 || !songArr[idx - 1].groupId || songArr[idx - 1].groupId !== entry.groupId;
+    var isEnd = idx === songArr.length - 1 || !songArr[idx + 1] || !songArr[idx + 1].groupId || songArr[idx + 1].groupId !== entry.groupId;
+    if (isStart) cell.classList.add('group-start');
+    if (isEnd) cell.classList.add('group-end');
+  }
+
+  cell.draggable = true;
+  cell.setAttribute('data-song-idx', idx);
+  var sp = getEntrySpan(entry);
+  if (sp > 1) cell.style.width = (78 * sp + 4 * (sp - 1)) + 'px';
+
+  // Name
+  var nameEl = document.createElement('div');
+  nameEl.className = 'sc-name';
+  if (isRT) nameEl.style.color = 'var(--color-rt)';
+  var isBlank = pat && pat.name === '';
+  nameEl.textContent = isBlank ? '\u2014' : (pat ? pat.name : '?');
+  if (isBlank) { cell.style.opacity = '0.45'; cell.style.background = 'var(--border-dim, var(--border))'; }
+
+  // Repeat
+  var repeatWrap = document.createElement('div');
+  repeatWrap.className = 'sc-repeat-wrap';
+  var repeatLabel = document.createElement('span');
+  repeatLabel.className = 'sc-repeat-label';
+  repeatLabel.textContent = 'x';
+  var repeatInput = document.createElement('input');
+  repeatInput.className = 'sc-repeat-input';
+  repeatInput.type = 'number'; repeatInput.min = 1; repeatInput.max = 99;
+  repeatInput.value = entry.repeat;
+  repeatInput.addEventListener('click', function(e) { e.stopPropagation(); });
+
+  // Step count display
+  var stepsEl = document.createElement('div');
+  stepsEl.className = 'sc-steps';
+  stepsEl.textContent = getEffectiveSteps(entry, isRT);
+
+  repeatInput.addEventListener('change', (function(ent, stEl, isR) {
+    return function() {
+      ent.repeat = Math.max(1, Math.min(99, parseInt(this.value) || 1));
+      this.value = ent.repeat;
+      stEl.textContent = getEffectiveSteps(ent, isR);
+      // Update row sum
+      var row = this.closest('.song-row');
+      if (row) {
+        var allSteps = row.querySelectorAll('.sc-steps');
+        var sum = 0;
+        allSteps.forEach(function(s) { sum += parseInt(s.textContent) || 0; });
+        var sumEl = row.querySelector('.song-row-sum');
+        if (sumEl) sumEl.textContent = sum;
+      }
+      updateSongTotals();
+    };
+  })(entry, stepsEl, isRT));
+  repeatWrap.appendChild(repeatLabel);
+  repeatWrap.appendChild(repeatInput);
+
+  // Delete button
+  var delBtn = document.createElement('div');
+  delBtn.className = 'sc-delete';
+  delBtn.textContent = '\u00D7';
+  delBtn.addEventListener('click', (function(i, isR) {
+    return function(e) {
+      e.stopPropagation();
+      var arr = isR ? rtSong : song;
+      if (arr.length <= 1) return;
+      arr.splice(i, 1);
+      if (isR) {
+        if (selectedRTSongCell >= arr.length) selectedRTSongCell = arr.length - 1;
+        if (songPlayhead >= arr.length) songPlayhead = Math.min(songPlayhead, arr.length - 1);
+        rtSongMultiSelect = rtSongMultiSelect.filter(function(s) { return s < arr.length; });
+      } else {
+        if (selectedSongCell >= arr.length) selectedSongCell = arr.length - 1;
+        if (songPlayhead >= arr.length) songPlayhead = arr.length - 1;
+        songMultiSelect = songMultiSelect.filter(function(s) { return s < arr.length; });
+      }
+      loopPoints = loopPoints.map(function(p) { return p > i ? p - 1 : p; }).filter(function(p) { return p >= 0 && p <= arr.length; });
+      renderInterleavedSong();
+    };
+  })(idx, isRT));
+
+  // Click: select
+  cell.addEventListener('click', (function(i, isR) {
+    return function(e) {
+      if (e.target.classList.contains('sc-delete') || e.target.classList.contains('sc-repeat-input') || e.target.classList.contains('sc-drag-handle') || e.target.classList.contains('sc-group-repeat')) return;
+      if (e.shiftKey) {
+        var mSel = isR ? rtSongMultiSelect : songMultiSelect;
+        var mi = mSel.indexOf(i);
+        if (mi >= 0) mSel.splice(mi, 1);
+        else mSel.push(i);
+        lastSongFocus = isR ? 'rt' : 'back';
+        renderInterleavedSong();
+        return;
+      }
+      if (isR) { rtSongMultiSelect = []; selectRTSongPosition(i); }
+      else { songMultiSelect = []; selectSongPosition(i); }
+    };
+  })(idx, isRT));
+
+  // Double-click name: rename
+  nameEl.addEventListener('dblclick', (function(ent, isR) {
+    return function(e) {
+      e.stopPropagation();
+      var p = (isR ? rtPatterns : patterns)[ent.patIdx];
+      if (!p) return;
+      var newName = prompt('Rename ' + (isR ? 'RT ' : '') + 'pattern "' + p.name + '" to:', p.name);
+      if (newName && newName.trim().length > 0 && newName.trim() !== p.name) {
+        p.name = newName.trim(); p.baseName = newName.trim(); p.varySuffix = '';
+        renderInterleavedSong();
+        if (isR) renderRTPatternSelect(); else renderPatternSelect();
+      }
+    };
+  })(entry, isRT));
+
+  // D&D handlers
+  cell.addEventListener('dragstart', (function(i, isR) {
+    return function(e) {
+      e.dataTransfer.setData('text/plain', JSON.stringify({ type: isR ? 'rt-song' : 'back-song', idx: i }));
+      e.dataTransfer.effectAllowed = 'move';
+      setTimeout(function() { cell.classList.add('drag-source'); }, 0);
+    };
+  })(idx, isRT));
+  cell.addEventListener('dragend', function() {
+    document.querySelectorAll('.drag-source,.drag-over-left,.drag-over-right').forEach(function(el) {
+      el.classList.remove('drag-source', 'drag-over-left', 'drag-over-right');
+    });
+  });
+  cell.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    var rect = cell.getBoundingClientRect();
+    cell.classList.remove('drag-over-left', 'drag-over-right');
+    cell.classList.add(e.clientX < rect.left + rect.width / 2 ? 'drag-over-left' : 'drag-over-right');
+  });
+  cell.addEventListener('dragleave', function() { cell.classList.remove('drag-over-left', 'drag-over-right'); });
+  cell.addEventListener('drop', (function(dropIdx, isR) {
+    return function(e) {
+      e.preventDefault();
+      cell.classList.remove('drag-over-left', 'drag-over-right');
+      try {
+        var data = JSON.parse(e.dataTransfer.getData('text/plain'));
+        var rect = cell.getBoundingClientRect();
+        var insertAfter = e.clientX >= rect.left + rect.width / 2;
+        var expectedType = isR ? 'rt-song' : 'back-song';
+        var arr = isR ? rtSong : song;
+        if (data.type === expectedType) {
+          var fromIdx = data.idx;
+          if (fromIdx === dropIdx) return;
+          var item = arr.splice(fromIdx, 1)[0];
+          var toIdx = fromIdx < dropIdx ? (insertAfter ? dropIdx : dropIdx - 1) : (insertAfter ? dropIdx + 1 : dropIdx);
+          arr.splice(toIdx, 0, item);
+          if (isR) selectedRTSongCell = toIdx; else selectedSongCell = toIdx;
+        } else if (!isR && data.type === 'pool') {
+          var toIdx = insertAfter ? dropIdx + 1 : dropIdx;
+          arr.splice(toIdx, 0, { patIdx: data.patIdx, repeat: 1, span: 1 });
+          selectedSongCell = toIdx;
+        }
+        renderInterleavedSong();
+      } catch(ex) {}
+    };
+  })(idx, isRT));
+
+  // Assemble
+  cell.appendChild(delBtn);
+  cell.appendChild(nameEl);
+  cell.appendChild(repeatWrap);
+  cell.appendChild(stepsEl);
+
+  // Marker badge
+  if (entry.marker && entry.marker >= 1 && entry.marker <= 9) {
+    var badge = document.createElement('div');
+    badge.className = 'sc-marker';
+    badge.textContent = entry.marker;
+    cell.appendChild(badge);
+  }
+
+  // Group repeat badge
+  if (entry.groupId && entry.groupRepeat && entry.groupRepeat > 1) {
+    var isEndGr = idx === songArr.length - 1 || !songArr[idx + 1] || !songArr[idx + 1].groupId || songArr[idx + 1].groupId !== entry.groupId;
+    if (isEndGr) {
+      var grBadge = document.createElement('div');
+      grBadge.className = 'sc-group-repeat';
+      grBadge.textContent = 'x' + entry.groupRepeat;
+      grBadge.addEventListener('click', (function(ent, isR) {
+        return function(e) {
+          e.stopPropagation();
+          var val = prompt('Group repeat count:', ent.groupRepeat || 2);
+          if (val === null) return;
+          var n = parseInt(val);
+          if (n >= 1 && n <= 99) {
+            (isR ? rtSong : song).forEach(function(s) { if (s.groupId === ent.groupId) s.groupRepeat = n; });
+            renderInterleavedSong();
+          }
+        };
+      })(entry, isRT));
+      cell.appendChild(grBadge);
+    }
+  }
+
+  // Span drag handle
+  var dragHandle = document.createElement('div');
+  dragHandle.className = 'sc-drag-handle';
+  dragHandle.addEventListener('mousedown', (function(ent, songIdx, isR) {
+    return function(e) { e.stopPropagation(); e.preventDefault(); startSpanDrag(ent, songIdx, isR, e); };
+  })(entry, idx, isRT));
+  cell.appendChild(dragHandle);
+
+  return cell;
+}
+
+function computeSongRowGroups() {
+  var container = document.getElementById('songInterleaved');
+  var availWidth = container ? (container.clientWidth - 70) : 600;
+  if (availWidth < 200) availWidth = 600;
+  var cellBase = 78, gapW = 12;
+
+  function chunk(songArr) {
+    var rows = [], currentRow = [], currentWidth = 0;
+    for (var i = 0; i < songArr.length; i++) {
+      var sp = getEntrySpan(songArr[i]);
+      var cellW = cellBase * sp + 4 * (sp - 1) + gapW;
+      if (currentWidth + cellW > availWidth && currentRow.length > 0) {
+        rows.push(currentRow);
+        currentRow = []; currentWidth = 0;
+      }
+      currentRow.push(i);
+      currentWidth += cellW;
+    }
+    if (currentRow.length > 0) rows.push(currentRow);
+    if (rows.length === 0) rows.push([]);
+    return rows;
+  }
+
+  var backRows = chunk(song);
+  var rtRows = chunk(rtSong);
+  var maxRows = Math.max(backRows.length, rtRows.length);
+  var groups = [];
+  for (var r = 0; r < maxRows; r++) {
+    groups.push({
+      backIndices: r < backRows.length ? backRows[r] : [],
+      rtIndices: r < rtRows.length ? rtRows[r] : []
+    });
+  }
+  return groups;
+}
+
+var _interleavedLock = false;
+function renderInterleavedSong() {
+  if (_interleavedLock) return;
+  _interleavedLock = true;
+  try { _renderInterleavedSongInner(); } finally { _interleavedLock = false; }
+}
+
+function _renderInterleavedSongInner() {
+  var container = document.getElementById('songInterleaved');
+  if (!container) return;
+  container.innerHTML = '';
+
+  var groups = computeSongRowGroups();
+  var backTotal = 0, rtTotal = 0;
+  var lastBackRowIdx = -1, lastRTRowIdx = -1;
+  // Find last rows that have content
+  for (var g = groups.length - 1; g >= 0; g--) {
+    if (lastBackRowIdx < 0 && groups[g].backIndices.length > 0) lastBackRowIdx = g;
+    if (lastRTRowIdx < 0 && groups[g].rtIndices.length > 0) lastRTRowIdx = g;
+  }
+  if (lastBackRowIdx < 0) lastBackRowIdx = 0;
+  if (lastRTRowIdx < 0) lastRTRowIdx = 0;
+
+  groups.forEach(function(group, rowIdx) {
+    var rowGroup = document.createElement('div');
+    rowGroup.className = 'song-row-group';
+
+    // --- BACK ROW ---
+    var backRow = document.createElement('div');
+    backRow.className = 'song-row';
+    var backLabel = document.createElement('span');
+    backLabel.className = 'song-row-label';
+    backLabel.textContent = 'B';
+    backRow.appendChild(backLabel);
+
+    var backCellsDiv = document.createElement('div');
+    backCellsDiv.className = 'song-row-cells';
+    var backRowSteps = 0;
+    group.backIndices.forEach(function(idx) {
+      backCellsDiv.appendChild(createSongGap(idx));
+      backCellsDiv.appendChild(createSongCell(song[idx], idx, false));
+      backRowSteps += getEffectiveSteps(song[idx], false);
+    });
+
+    // Trailing gap + add button (only on last back row)
+    if (rowIdx === lastBackRowIdx) {
+      if (song.length > 0) backCellsDiv.appendChild(createSongGap(song.length));
+      var addBtn = document.createElement('div');
+      addBtn.className = 'song-add';
+      addBtn.textContent = '+';
+      addBtn.addEventListener('click', function() {
+        var pat = makePattern('');
+        pat.baseName = ''; pat.varySuffix = '';
+        pat.patternLength = patterns.length > 0 ? (patterns[currentPatternIdx >= 0 ? currentPatternIdx : 0].patternLength || 128) : 128;
+        for (var c = 0; c < 3; c++) pat.channels[c].count = pat.patternLength;
+        patterns.push(pat);
+        song.push({ patIdx: patterns.length - 1, repeat: 1, span: 1 });
+        selectSongPosition(song.length - 1);
+      });
+      addBtn.addEventListener('dragover', function(e) { e.preventDefault(); addBtn.style.borderColor = 'var(--freq-color)'; });
+      addBtn.addEventListener('dragleave', function() { addBtn.style.borderColor = ''; });
+      addBtn.addEventListener('drop', function(e) {
+        e.preventDefault(); addBtn.style.borderColor = '';
+        try {
+          var data = JSON.parse(e.dataTransfer.getData('text/plain'));
+          if (data.type === 'pool') {
+            song.push({ patIdx: data.patIdx, repeat: 1, span: 1 });
+            selectedSongCell = song.length - 1;
+            renderInterleavedSong();
+          }
+        } catch(ex) {}
+      });
+      backCellsDiv.appendChild(addBtn);
+    }
+
+    backRow.appendChild(backCellsDiv);
+    var backSum = document.createElement('span');
+    backSum.className = 'song-row-sum';
+    backSum.textContent = backRowSteps;
+    backRow.appendChild(backSum);
+    backTotal += backRowSteps;
+    rowGroup.appendChild(backRow);
+
+    // --- RT ROW ---
+    var rtRow = document.createElement('div');
+    rtRow.className = 'song-row';
+    var rtLabel = document.createElement('span');
+    rtLabel.className = 'song-row-label rt-label';
+    rtLabel.textContent = 'R';
+    rtRow.appendChild(rtLabel);
+
+    var rtCellsDiv = document.createElement('div');
+    rtCellsDiv.className = 'song-row-cells';
+    var rtRowSteps = 0;
+    group.rtIndices.forEach(function(idx) {
+      rtCellsDiv.appendChild(createSongGap(idx));
+      rtCellsDiv.appendChild(createSongCell(rtSong[idx], idx, true));
+      rtRowSteps += getEffectiveSteps(rtSong[idx], true);
+    });
+
+    // Trailing gap + add button (only on last RT row)
+    if (rowIdx === lastRTRowIdx) {
+      if (rtSong.length > 0) rtCellsDiv.appendChild(createSongGap(rtSong.length));
+      var rtAddBtn = document.createElement('div');
+      rtAddBtn.className = 'song-add';
+      rtAddBtn.style.borderColor = 'var(--color-rt)';
+      rtAddBtn.textContent = '+';
+      rtAddBtn.addEventListener('click', function() {
+        var pat = makeRTPattern('');
+        pat.baseName = ''; pat.varySuffix = '';
+        pat.patternLength = patterns[currentPatternIdx >= 0 ? currentPatternIdx : 0].patternLength || 128;
+        pat.channels[0].count = pat.patternLength;
+        rtPatterns.push(pat);
+        rtSong.push({ patIdx: rtPatterns.length - 1, repeat: 1, span: 1 });
+        selectedRTSongCell = rtSong.length - 1;
+        switchToRTPattern(rtPatterns.length - 1);
+        renderInterleavedSong();
+      });
+      rtCellsDiv.appendChild(rtAddBtn);
+    }
+
+    rtRow.appendChild(rtCellsDiv);
+    var rtSum = document.createElement('span');
+    rtSum.className = 'song-row-sum';
+    rtSum.textContent = rtRowSteps;
+    rtRow.appendChild(rtSum);
+    rtTotal += rtRowSteps;
+    rowGroup.appendChild(rtRow);
+
+    container.appendChild(rowGroup);
+  });
+
+  // Update totals in header
+  var totalsEl = document.getElementById('songTotals');
+  if (totalsEl) {
+    var match = backTotal === rtTotal;
+    totalsEl.innerHTML = '<span>B:' + backTotal + '</span><span>R:' + rtTotal + '</span>' +
+      (match ? '<span class="total-match">\u2713</span>' : '<span class="total-mismatch">\u25B2' + Math.abs(backTotal - rtTotal) + '</span>');
+  }
+
+  renderPatternPool();
+  renderSongColorDropdown();
+  renderRTPatternSelect();
+}
+
+// Resize handler for re-chunking rows
+window.addEventListener('resize', function() {
+  clearTimeout(window._songResizeTimer);
+  window._songResizeTimer = setTimeout(function() { renderInterleavedSong(); }, 250);
+});
+
+// ============================================================
 //  SONG LANE RENDERING
 // ============================================================
 // Helper: select a back song position (sets playhead, does NOT change RT selection)
@@ -1522,281 +1988,7 @@ function selectRTSongPosition(idx) {
   renderRTSongLane();
 }
 
-function renderSongLane() {
-  var wrap = document.getElementById('songLane');
-  if (!wrap) return;
-  wrap.innerHTML = '';
-
-  song.forEach(function(entry, idx) {
-    // v7.1: Gap element for loop point (before each cell)
-    var gap = document.createElement('div');
-    gap.className = 'song-gap';
-    gap.setAttribute('data-gap-pos', idx);
-    if (loopPoints.indexOf(idx) >= 0) {
-      gap.innerHTML = '';
-      var lp = document.createElement('div');
-      lp.className = 'song-loop-point';
-      if (loopPoints.length >= 2) lp.classList.add('loop-active');
-      lp.addEventListener('click', (function(pos) {
-        return function(e) { e.stopPropagation(); removeLoopPoint(pos); };
-      })(idx));
-      lp.addEventListener('mousedown', (function(pos) {
-        return function(e) { if (e.button === 0) { e.stopPropagation(); startLoopPointDrag(pos, e); } };
-      })(idx));
-      gap.appendChild(lp);
-    } else {
-      gap.addEventListener('dblclick', (function(pos) {
-        return function(e) { e.stopPropagation(); addLoopPoint(pos); };
-      })(idx));
-    }
-    wrap.appendChild(gap);
-
-    var pat = patterns[entry.patIdx];
-    var cell = document.createElement('div');
-    cell.className = 'song-cell';
-    if (entry.sectionColor && entry.sectionColor !== 'none') cell.classList.add('sec-' + entry.sectionColor);
-    if (idx === selectedSongCell) cell.classList.add('active');
-    if (songMultiSelect.indexOf(idx) >= 0) cell.classList.add('multi-selected');
-    if (idx === songPlayhead) cell.classList.add('song-playhead');
-    // v7.1: group styling
-    if (entry.groupId) {
-      cell.classList.add('grouped');
-      var isStart = idx === 0 || !song[idx - 1].groupId || song[idx - 1].groupId !== entry.groupId;
-      var isEnd = idx === song.length - 1 || !song[idx + 1] || !song[idx + 1].groupId || song[idx + 1].groupId !== entry.groupId;
-      if (isStart) cell.classList.add('group-start');
-      if (isEnd) cell.classList.add('group-end');
-    }
-    cell.draggable = true;
-    cell.setAttribute('data-song-idx', idx);
-    // Span-based width (v7.0)
-    var sp = getEntrySpan(entry);
-    if (sp > 1) cell.style.width = (78 * sp + 4 * (sp - 1)) + 'px';
-
-    var nameEl = document.createElement('div');
-    nameEl.className = 'sc-name';
-    var isBlank = pat && pat.name === '';
-    nameEl.textContent = isBlank ? '—' : (pat ? pat.name : '?');
-    if (isBlank) {
-      cell.style.opacity = '0.45';
-      cell.style.background = 'var(--border-dim, var(--border))';
-    }
-
-    var repeatWrap = document.createElement('div');
-    repeatWrap.className = 'sc-repeat-wrap';
-    var repeatLabel = document.createElement('span');
-    repeatLabel.className = 'sc-repeat-label';
-    repeatLabel.textContent = 'x';
-    var repeatInput = document.createElement('input');
-    repeatInput.className = 'sc-repeat-input';
-    repeatInput.type = 'number';
-    repeatInput.min = 1; repeatInput.max = 99;
-    repeatInput.value = entry.repeat;
-    repeatInput.addEventListener('click', function(e) { e.stopPropagation(); });
-    repeatInput.addEventListener('change', (function(ent) {
-      return function() { ent.repeat = Math.max(1, Math.min(99, parseInt(this.value) || 1)); this.value = ent.repeat; };
-    })(entry));
-    repeatWrap.appendChild(repeatLabel);
-    repeatWrap.appendChild(repeatInput);
-
-    // Delete button
-    var delBtn = document.createElement('div');
-    delBtn.className = 'sc-delete';
-    delBtn.textContent = '\u00D7';
-    delBtn.addEventListener('click', (function(i) {
-      return function(e) {
-        e.stopPropagation();
-        if (song.length <= 1) return;
-        song.splice(i, 1);
-        if (selectedSongCell >= song.length) selectedSongCell = song.length - 1;
-        if (songPlayhead >= song.length) songPlayhead = song.length - 1;
-        songMultiSelect = songMultiSelect.filter(function(s) { return s < song.length; });
-        // Fix loop points
-        loopPoints = loopPoints.map(function(p) { return p > i ? p - 1 : p; }).filter(function(p) { return p >= 0 && p <= song.length; });
-        renderSongLane(); renderPatternPool();
-      };
-    })(idx));
-
-    // Click: select this cell (Shift = multi-select)
-    cell.addEventListener('click', (function(i) {
-      return function(e) {
-        if (e.target.classList.contains('sc-delete') || e.target.classList.contains('sc-repeat-input') || e.target.classList.contains('sc-drag-handle') || e.target.classList.contains('sc-group-repeat')) return;
-        if (e.shiftKey) {
-          // Multi-select toggle
-          var mi = songMultiSelect.indexOf(i);
-          if (mi >= 0) songMultiSelect.splice(mi, 1);
-          else songMultiSelect.push(i);
-          lastSongFocus = 'back';
-          renderSongLane(); renderRTSongLane();
-          return;
-        }
-        songMultiSelect = [];
-        selectSongPosition(i);
-      };
-    })(idx));
-
-    // Double-click name: rename this specific pattern
-    nameEl.addEventListener('dblclick', (function(ent) {
-      return function(e) {
-        e.stopPropagation();
-        var p = patterns[ent.patIdx];
-        if (!p) return;
-        var newName = prompt('Rename pattern "' + p.name + '" to:', p.name);
-        if (newName && newName.trim().length > 0 && newName !== p.name) {
-          p.name = newName.trim();
-          p.baseName = newName.trim();
-          p.varySuffix = '';
-          renderSongLane(); renderPatternSelect(); renderPatternPool();
-        }
-      };
-    })(entry));
-
-    // D&D handlers
-    cell.addEventListener('dragstart', (function(i) {
-      return function(e) {
-        e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'back-song', idx: i }));
-        e.dataTransfer.effectAllowed = 'move';
-        setTimeout(function() { cell.classList.add('drag-source'); }, 0);
-      };
-    })(idx));
-    cell.addEventListener('dragend', function() {
-      document.querySelectorAll('.drag-source,.drag-over-left,.drag-over-right').forEach(function(el) {
-        el.classList.remove('drag-source', 'drag-over-left', 'drag-over-right');
-      });
-    });
-    cell.addEventListener('dragover', function(e) {
-      e.preventDefault();
-      var rect = cell.getBoundingClientRect();
-      cell.classList.remove('drag-over-left', 'drag-over-right');
-      cell.classList.add(e.clientX < rect.left + rect.width / 2 ? 'drag-over-left' : 'drag-over-right');
-    });
-    cell.addEventListener('dragleave', function() { cell.classList.remove('drag-over-left', 'drag-over-right'); });
-    cell.addEventListener('drop', (function(dropIdx) {
-      return function(e) {
-        e.preventDefault();
-        cell.classList.remove('drag-over-left', 'drag-over-right');
-        try {
-          var data = JSON.parse(e.dataTransfer.getData('text/plain'));
-          var rect = cell.getBoundingClientRect();
-          var insertAfter = e.clientX >= rect.left + rect.width / 2;
-          if (data.type === 'back-song') {
-            var fromIdx = data.idx;
-            if (fromIdx === dropIdx) return;
-            var item = song.splice(fromIdx, 1)[0];
-            var toIdx = fromIdx < dropIdx ? (insertAfter ? dropIdx : dropIdx - 1) : (insertAfter ? dropIdx + 1 : dropIdx);
-            song.splice(toIdx, 0, item);
-            selectedSongCell = toIdx;
-          } else if (data.type === 'pool') {
-            var toIdx = insertAfter ? dropIdx + 1 : dropIdx;
-            song.splice(toIdx, 0, { patIdx: data.patIdx, repeat: 1, span: 1 });
-            selectedSongCell = toIdx;
-          }
-          renderSongLane(); renderPatternPool();
-        } catch(ex) {}
-      };
-    })(idx));
-
-    cell.appendChild(delBtn);
-    cell.appendChild(nameEl);
-    cell.appendChild(repeatWrap);
-    // v7.1: Marker badge
-    if (entry.marker && entry.marker >= 1 && entry.marker <= 9) {
-      var badge = document.createElement('div');
-      badge.className = 'sc-marker';
-      badge.textContent = entry.marker;
-      cell.appendChild(badge);
-    }
-    // v7.1: Group repeat badge (on last cell of group)
-    if (entry.groupId && entry.groupRepeat && entry.groupRepeat > 1) {
-      var isEnd = idx === song.length - 1 || !song[idx + 1] || !song[idx + 1].groupId || song[idx + 1].groupId !== entry.groupId;
-      if (isEnd) {
-        var grBadge = document.createElement('div');
-        grBadge.className = 'sc-group-repeat';
-        grBadge.textContent = 'x' + entry.groupRepeat;
-        grBadge.addEventListener('click', (function(ent) {
-          return function(e) {
-            e.stopPropagation();
-            var val = prompt('Group repeat count:', ent.groupRepeat || 2);
-            if (val === null) return;
-            var n = parseInt(val);
-            if (n >= 1 && n <= 99) {
-              // Set for all cells in this group
-              song.forEach(function(s) { if (s.groupId === ent.groupId) s.groupRepeat = n; });
-              renderSongLane();
-            }
-          };
-        })(entry));
-        cell.appendChild(grBadge);
-      }
-    }
-    // Span drag handle (v7.0)
-    var dragHandle = document.createElement('div');
-    dragHandle.className = 'sc-drag-handle';
-    dragHandle.addEventListener('mousedown', (function(ent, songIdx) {
-      return function(e) {
-        e.stopPropagation();
-        e.preventDefault();
-        startSpanDrag(ent, songIdx, false, e);
-      };
-    })(entry, idx));
-    cell.appendChild(dragHandle);
-    wrap.appendChild(cell);
-  });
-
-  // Trailing gap for loop point after last cell
-  if (song.length > 0) {
-    var trailGap = document.createElement('div');
-    trailGap.className = 'song-gap';
-    var trailPos = song.length;
-    trailGap.setAttribute('data-gap-pos', trailPos);
-    if (loopPoints.indexOf(trailPos) >= 0) {
-      var lp = document.createElement('div');
-      lp.className = 'song-loop-point';
-      if (loopPoints.length >= 2) lp.classList.add('loop-active');
-      lp.addEventListener('click', (function(pos) {
-        return function(e) { e.stopPropagation(); removeLoopPoint(pos); };
-      })(trailPos));
-      lp.addEventListener('mousedown', (function(pos) {
-        return function(e) { if (e.button === 0) { e.stopPropagation(); startLoopPointDrag(pos, e); } };
-      })(trailPos));
-      trailGap.appendChild(lp);
-    } else {
-      trailGap.addEventListener('dblclick', (function(pos) {
-        return function(e) { e.stopPropagation(); addLoopPoint(pos); };
-      })(trailPos));
-    }
-    wrap.appendChild(trailGap);
-  }
-
-  // Add button
-  var addBtn = document.createElement('div');
-  addBtn.className = 'song-add';
-  addBtn.textContent = '+';
-  addBtn.addEventListener('click', function() {
-    var pat = makePattern('');
-    pat.baseName = ''; pat.varySuffix = '';
-    pat.patternLength = patterns.length > 0 ? (patterns[currentPatternIdx >= 0 ? currentPatternIdx : 0].patternLength || 128) : 128;
-    for (var c = 0; c < 3; c++) pat.channels[c].count = pat.patternLength;
-    patterns.push(pat);
-    song.push({ patIdx: patterns.length - 1, repeat: 1, span: 1 });
-    selectSongPosition(song.length - 1);
-  });
-  addBtn.addEventListener('dragover', function(e) { e.preventDefault(); addBtn.style.borderColor = 'var(--freq-color)'; });
-  addBtn.addEventListener('dragleave', function() { addBtn.style.borderColor = ''; });
-  addBtn.addEventListener('drop', function(e) {
-    e.preventDefault(); addBtn.style.borderColor = '';
-    try {
-      var data = JSON.parse(e.dataTransfer.getData('text/plain'));
-      if (data.type === 'pool') {
-        song.push({ patIdx: data.patIdx, repeat: 1, span: 1 });
-        selectedSongCell = song.length - 1;
-        renderSongLane(); renderPatternPool();
-      }
-    } catch(ex) {}
-  });
-  wrap.appendChild(addBtn);
-  renderPatternPool();
-  renderSongColorDropdown();
-}
+function renderSongLane() { renderInterleavedSong(); }
 
 var _patSelectLocked = false;
 function renderPatternSelect() {
@@ -2503,249 +2695,7 @@ function nextRTCopyName(srcPat) {
   return { name: base + '_' + (rtPatterns.length + 1), baseName: base, varySuffix: '_' + (rtPatterns.length + 1) };
 }
 
-function renderRTSongLane() {
-  var wrap = document.getElementById('rtSongLane');
-  if (!wrap) return;
-  wrap.innerHTML = '';
-
-  rtSong.forEach(function(entry, idx) {
-    // v7.1: Gap for loop points
-    var gap = document.createElement('div');
-    gap.className = 'song-gap';
-    gap.setAttribute('data-gap-pos', idx);
-    if (loopPoints.indexOf(idx) >= 0) {
-      var lp = document.createElement('div');
-      lp.className = 'song-loop-point';
-      if (loopPoints.length >= 2) lp.classList.add('loop-active');
-      lp.addEventListener('click', (function(pos) {
-        return function(e) { e.stopPropagation(); removeLoopPoint(pos); };
-      })(idx));
-      lp.addEventListener('mousedown', (function(pos) {
-        return function(e) { if (e.button === 0) { e.stopPropagation(); startLoopPointDrag(pos, e); } };
-      })(idx));
-      gap.appendChild(lp);
-    } else {
-      gap.addEventListener('dblclick', (function(pos) {
-        return function(e) { e.stopPropagation(); addLoopPoint(pos); };
-      })(idx));
-    }
-    wrap.appendChild(gap);
-
-    var pat = rtPatterns[entry.patIdx];
-    var cell = document.createElement('div');
-    cell.className = 'song-cell rt-song-cell';
-    if (entry.sectionColor && entry.sectionColor !== 'none') cell.classList.add('sec-' + entry.sectionColor);
-    if (idx === selectedRTSongCell) cell.classList.add('active');
-    if (rtSongMultiSelect.indexOf(idx) >= 0) cell.classList.add('multi-selected');
-    if (idx === songPlayhead) cell.classList.add('song-playhead');
-    // v7.1: group styling
-    if (entry.groupId) {
-      cell.classList.add('grouped');
-      var isStart = idx === 0 || !rtSong[idx - 1].groupId || rtSong[idx - 1].groupId !== entry.groupId;
-      var isEnd = idx === rtSong.length - 1 || !rtSong[idx + 1] || !rtSong[idx + 1].groupId || rtSong[idx + 1].groupId !== entry.groupId;
-      if (isStart) cell.classList.add('group-start');
-      if (isEnd) cell.classList.add('group-end');
-    }
-    cell.draggable = true;
-    var sp = getEntrySpan(entry);
-    if (sp > 1) cell.style.width = (78 * sp + 4 * (sp - 1)) + 'px';
-
-    var nameEl = document.createElement('div');
-    nameEl.className = 'sc-name';
-    nameEl.style.color = 'var(--color-rt)';
-    var isBlank = pat && pat.name === '';
-    nameEl.textContent = isBlank ? '—' : (pat ? pat.name : '?');
-    if (isBlank) { cell.style.opacity = '0.45'; cell.style.background = 'var(--border-dim, var(--border))'; }
-
-    var repeatWrap = document.createElement('div');
-    repeatWrap.className = 'sc-repeat-wrap';
-    var repeatLabel = document.createElement('span');
-    repeatLabel.className = 'sc-repeat-label';
-    repeatLabel.textContent = 'x';
-    var repeatInput = document.createElement('input');
-    repeatInput.className = 'sc-repeat-input';
-    repeatInput.type = 'number'; repeatInput.min = 1; repeatInput.max = 99;
-    repeatInput.value = entry.repeat;
-    repeatInput.addEventListener('click', function(e) { e.stopPropagation(); });
-    repeatInput.addEventListener('change', (function(ent) {
-      return function() { ent.repeat = Math.max(1, Math.min(99, parseInt(this.value) || 1)); this.value = ent.repeat; };
-    })(entry));
-    repeatWrap.appendChild(repeatLabel);
-    repeatWrap.appendChild(repeatInput);
-
-    var delBtn = document.createElement('div');
-    delBtn.className = 'sc-delete';
-    delBtn.textContent = '\u00D7';
-    delBtn.addEventListener('click', (function(i) {
-      return function(e) {
-        e.stopPropagation();
-        if (rtSong.length <= 1) return;
-        rtSong.splice(i, 1);
-        if (selectedRTSongCell >= rtSong.length) selectedRTSongCell = rtSong.length - 1;
-        if (songPlayhead >= rtSong.length) songPlayhead = Math.min(songPlayhead, rtSong.length - 1);
-        rtSongMultiSelect = rtSongMultiSelect.filter(function(s) { return s < rtSong.length; });
-        loopPoints = loopPoints.map(function(p) { return p > i ? p - 1 : p; }).filter(function(p) { return p >= 0 && p <= rtSong.length; });
-        renderRTSongLane();
-      };
-    })(idx));
-
-    // Click: select RT cell (Shift = multi-select)
-    cell.addEventListener('click', (function(i) {
-      return function(e) {
-        if (e.target.classList.contains('sc-delete') || e.target.classList.contains('sc-repeat-input') || e.target.classList.contains('sc-drag-handle') || e.target.classList.contains('sc-group-repeat')) return;
-        if (e.shiftKey) {
-          var mi = rtSongMultiSelect.indexOf(i);
-          if (mi >= 0) rtSongMultiSelect.splice(mi, 1);
-          else rtSongMultiSelect.push(i);
-          lastSongFocus = 'rt';
-          renderSongLane(); renderRTSongLane();
-          return;
-        }
-        rtSongMultiSelect = [];
-        selectRTSongPosition(i);
-      };
-    })(idx));
-
-    nameEl.addEventListener('dblclick', (function(ent) {
-      return function(e) {
-        e.stopPropagation();
-        var p = rtPatterns[ent.patIdx];
-        if (!p) return;
-        var newName = prompt('Rename RT pattern "' + p.name + '" to:', p.name);
-        if (newName && newName.trim().length > 0 && newName.trim() !== p.name) {
-          p.name = newName.trim(); p.baseName = newName.trim(); p.varySuffix = '';
-          renderRTSongLane(); renderRTPatternSelect(); renderPatternPool();
-        }
-      };
-    })(entry));
-
-    // D&D
-    cell.addEventListener('dragstart', (function(i) {
-      return function(e) {
-        e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'rt-song', idx: i }));
-        e.dataTransfer.effectAllowed = 'move';
-        setTimeout(function() { cell.classList.add('drag-source'); }, 0);
-      };
-    })(idx));
-    cell.addEventListener('dragend', function() {
-      document.querySelectorAll('.drag-source,.drag-over-left,.drag-over-right').forEach(function(el) {
-        el.classList.remove('drag-source', 'drag-over-left', 'drag-over-right');
-      });
-    });
-    cell.addEventListener('dragover', function(e) {
-      e.preventDefault();
-      var rect = cell.getBoundingClientRect();
-      cell.classList.remove('drag-over-left', 'drag-over-right');
-      cell.classList.add(e.clientX < rect.left + rect.width / 2 ? 'drag-over-left' : 'drag-over-right');
-    });
-    cell.addEventListener('dragleave', function() { cell.classList.remove('drag-over-left', 'drag-over-right'); });
-    cell.addEventListener('drop', (function(dropIdx) {
-      return function(e) {
-        e.preventDefault();
-        cell.classList.remove('drag-over-left', 'drag-over-right');
-        try {
-          var data = JSON.parse(e.dataTransfer.getData('text/plain'));
-          if (data.type !== 'rt-song') return;
-          var rect = cell.getBoundingClientRect();
-          var insertAfter = e.clientX >= rect.left + rect.width / 2;
-          var fromIdx = data.idx;
-          if (fromIdx === dropIdx) return;
-          var item = rtSong.splice(fromIdx, 1)[0];
-          var toIdx = fromIdx < dropIdx ? (insertAfter ? dropIdx : dropIdx - 1) : (insertAfter ? dropIdx + 1 : dropIdx);
-          rtSong.splice(toIdx, 0, item);
-          selectedRTSongCell = toIdx;
-          renderRTSongLane();
-        } catch(ex) {}
-      };
-    })(idx));
-
-    cell.appendChild(delBtn);
-    cell.appendChild(nameEl);
-    cell.appendChild(repeatWrap);
-    // v7.1: Marker badge
-    if (entry.marker && entry.marker >= 1 && entry.marker <= 9) {
-      var badge = document.createElement('div');
-      badge.className = 'sc-marker';
-      badge.textContent = entry.marker;
-      cell.appendChild(badge);
-    }
-    // v7.1: Group repeat badge
-    if (entry.groupId && entry.groupRepeat && entry.groupRepeat > 1) {
-      var isEnd = idx === rtSong.length - 1 || !rtSong[idx + 1] || !rtSong[idx + 1].groupId || rtSong[idx + 1].groupId !== entry.groupId;
-      if (isEnd) {
-        var grBadge = document.createElement('div');
-        grBadge.className = 'sc-group-repeat';
-        grBadge.textContent = 'x' + entry.groupRepeat;
-        grBadge.addEventListener('click', (function(ent) {
-          return function(e) {
-            e.stopPropagation();
-            var val = prompt('Group repeat count:', ent.groupRepeat || 2);
-            if (val === null) return;
-            var n = parseInt(val);
-            if (n >= 1 && n <= 99) {
-              rtSong.forEach(function(s) { if (s.groupId === ent.groupId) s.groupRepeat = n; });
-              renderRTSongLane();
-            }
-          };
-        })(entry));
-        cell.appendChild(grBadge);
-      }
-    }
-    var dragHandleRT = document.createElement('div');
-    dragHandleRT.className = 'sc-drag-handle';
-    dragHandleRT.addEventListener('mousedown', (function(ent, songIdx) {
-      return function(e) {
-        e.stopPropagation(); e.preventDefault();
-        startSpanDrag(ent, songIdx, true, e);
-      };
-    })(entry, idx));
-    cell.appendChild(dragHandleRT);
-    wrap.appendChild(cell);
-  });
-
-  // Trailing gap
-  if (rtSong.length > 0) {
-    var trailGap = document.createElement('div');
-    trailGap.className = 'song-gap';
-    var trailPos = rtSong.length;
-    trailGap.setAttribute('data-gap-pos', trailPos);
-    if (loopPoints.indexOf(trailPos) >= 0) {
-      var lp = document.createElement('div');
-      lp.className = 'song-loop-point';
-      if (loopPoints.length >= 2) lp.classList.add('loop-active');
-      lp.addEventListener('click', (function(pos) {
-        return function(e) { e.stopPropagation(); removeLoopPoint(pos); };
-      })(trailPos));
-      lp.addEventListener('mousedown', (function(pos) {
-        return function(e) { if (e.button === 0) { e.stopPropagation(); startLoopPointDrag(pos, e); } };
-      })(trailPos));
-      trailGap.appendChild(lp);
-    } else {
-      trailGap.addEventListener('dblclick', (function(pos) {
-        return function(e) { e.stopPropagation(); addLoopPoint(pos); };
-      })(trailPos));
-    }
-    wrap.appendChild(trailGap);
-  }
-
-  var addBtn = document.createElement('div');
-  addBtn.className = 'song-add';
-  addBtn.style.borderColor = 'var(--color-rt)';
-  addBtn.textContent = '+';
-  addBtn.addEventListener('click', function() {
-    var pat = makeRTPattern('');
-    pat.baseName = ''; pat.varySuffix = '';
-    pat.patternLength = patterns[currentPatternIdx >= 0 ? currentPatternIdx : 0].patternLength || 128;
-    pat.channels[0].count = pat.patternLength;
-    rtPatterns.push(pat);
-    rtSong.push({ patIdx: rtPatterns.length - 1, repeat: 1, span: 1 });
-    selectedRTSongCell = rtSong.length - 1;
-    switchToRTPattern(rtPatterns.length - 1);
-    renderPatternPool();
-  });
-  wrap.appendChild(addBtn);
-  renderRTPatternSelect();
-}
+function renderRTSongLane() { renderInterleavedSong(); }
 
 function renderRTPatternSelect() {
   var sel = document.getElementById('rtPatSelect');
@@ -4453,10 +4403,10 @@ function songTick() {
 
   // Highlight song cells
   document.querySelectorAll('.song-cell.song-playing').forEach(function(e) { e.classList.remove('song-playing'); });
-  var songCells = document.getElementById('songLane');
-  if (songCells) { var cells = songCells.querySelectorAll('.song-cell'); if (cells[songPos]) cells[songPos].classList.add('song-playing'); }
-  var rtSongLane = document.getElementById('rtSongLane');
-  if (rtSongLane && rtSongPos < rtSong.length) { var rtCells = rtSongLane.querySelectorAll('.song-cell'); if (rtCells[rtSongPos]) rtCells[rtSongPos].classList.add('song-playing'); }
+  var _bpc = document.querySelector('[data-back-song-idx="' + songPos + '"]');
+  if (_bpc) _bpc.classList.add('song-playing');
+  var _rpc = document.querySelector('[data-rt-song-idx="' + rtSongPos + '"]');
+  if (_rpc) _rpc.classList.add('song-playing');
 
   var statusText = '\u25B6 SONG [' + pat.name + '] rep ' + (songRepeatCount + 1) + '/' + entry.repeat + ' step ' + (stepInPattern + 1);
   document.getElementById('status').textContent = statusText;
