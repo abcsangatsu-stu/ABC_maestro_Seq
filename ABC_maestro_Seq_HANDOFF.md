@@ -1,8 +1,8 @@
 # ABC Maestro SEQ — プロジェクト引き継ぎドキュメント
 
 **最終更新:** 2026-03-20
-**ステータス:** v7.5（インターリーブSong / ステップ数表示 / S2Sコピペ / ステップベースLoop / パステル28色 / RT小文字命名）
-**最新ファイル:** `ABC_maestro_Seq_v7_5.html`（単一HTML、約8040行）
+**ステータス:** v7.6（RT途中再生オフセット / RT小文字統一 / 手動改行修正 / カラーピッカー+グラデーション）
+**最新ファイル:** `ABC_maestro_Seq_v7_6.html`（単一HTML、約8150行）
 **用途:** Oxi One MK2 用 LFOトリガーパターン作成ツール
 **関連ツール:** Shape→Sound v2.1（パターン生成 → Maestroへインポート）
 
@@ -157,9 +157,10 @@ CH1: `#e11d48`(赤), CH2: `#3b82f6`(青), CH3: `#22c55e`(緑), RT: `#06b6d4`(水
 - 行の折り返しはコンテナ幅に基づいて自動計算（`computeSongRowGroups()`）
 - ウィンドウリサイズ時に自動再計算
 
-**手動改行（v7.5〜）:**
+**手動改行（v7.5〜 / v7.6修正）:**
 - セル選択状態で **Enter** キー → そのセルの後に改行を挿入/解除（トグル）
 - `lineBreak: true` がセットされるとセル下部にアクセント色のバー表示
+- **v7.6修正**: `computeSongRowGroups()` の `chunk()` が `lineBreak` を認識し、実際に行グループを分割するように修正。再度Enterで解除すると行が元に戻る
 - Aメロ/Bメロ等のセクション区切りに使用
 - Save/Load互換（JSON自動保存）
 
@@ -225,23 +226,20 @@ CH1: `#e11d48`(赤), CH2: `#3b82f6`(青), CH3: `#22c55e`(緑), RT: `#06b6d4`(水
 
 **clipboard排他制御（v7.0〜）**: cellClipboard設定時にpatternClipboard=null、逆も同様。
 
-### セル背景色（v7.5〜 28色パステルパレット）
+### セル背景色（v7.6〜 カラーピッカー + HSLグラデーション）
 
-- SONG欄右上にカラーパレット（28色、13px ボタン）
-- セル選択状態でパレットの色をクリック → `sectionColor` に設定 → 背景色変更
-- Shift+クリック複数選択時は一括変更
-- `background: color-mix()` 方式（CSSは動的生成）
+- SONG欄右上に色選択UI:
+  - **✕** ボタン: 色クリア（`sectionColor = 'none'`）
+  - **HSLグラデーションバー**（160px canvas）: クリックで色相を直接選択
+  - **現在色スウォッチ**: 選択セルの色をリアルタイム表示
+  - **ネイティブカラーピッカー**（`<input type="color">`）: 任意色を詳細選択
+- `sectionColor` にHEX値（`'#rrggbb'`）を直接格納
+- **後方互換**: 旧プリセット名（`'red'`, `'blue'` 等）もロード時にそのまま動作（`SEC_COLOR_MAP` でHEXに解決）
+- `createSongCell()` で `sectionColor` の先頭文字が `#` ならインラインstyle、それ以外なら `sec-*` CSSクラスで適用
 - Back / RT 両方対応（`lastSongFocus` で適用先を判定）
-- **v7.5**: ブランクセルにも色設定可能（色付きブランクは色表示、色なしブランクはグレー半透明）
-
-**SEC_COLORS（28色）:**
-```
-none, red, red-lt, coral, orange, orange-lt, peach,
-yellow, yellow-lt, lime, green, green-lt, mint,
-teal, cyan, blue, blue-lt, sky, indigo,
-purple, purple-lt, lavender, pink, pink-lt, rose,
-brown, sand, gray
-```
+- ブランクセルにも色設定可能（v7.6: `secColor` typo修正済み）
+- `applySectionColor(c)`: Back/RT共通の色適用関数（v7.6〜）
+- セル選択変更時にスウォッチ自動更新（`_updateSwatch`）
 
 ### マーカー（v7.1〜）
 
@@ -392,7 +390,8 @@ freqToNoteName(freq)                 // 220Hz → "A3" 等
 
 ```javascript
 flattenSongWithGroups(songArr)       // groupRepeatを展開した平坦配列を返す（エクスポート用）
-renderSongColorDropdown()            // 28色パレット描画
+renderSongColorDropdown()            // v7.6: カラーピッカー+グラデーションバー描画
+applySectionColor(c)                 // v7.6: Back/RT共通の色適用（HEXまたはプリセット名）
 generateGroupId()                    // ユニークなgroupId生成
 groupSelectedCells(isRT)             // 選択セルをグループ化
 ungroupCell(isRT, idx)               // グループ解除
@@ -420,7 +419,7 @@ curStep    // Back用。patLen到達で0リセット
 rtCurStep  // RT用（v7.0〜）。rtPatLen到達で0リセット
 ```
 
-### 途中再生（v7.5〜 ステップベース同期）
+### 途中再生（v7.5〜 ステップベース同期 / v7.6 オフセット修正）
 
 ```javascript
 // doSongPlay()
@@ -429,10 +428,10 @@ songPos = songPlayhead（Back cell index）
 backStepPos = Σ(patterns[song[i].patIdx].patternLength × repeat) for i < songPos
 // RTの対応セルをインラインforループで探索
 rtStepAccum を積み上げ、backStepPos を超えるセルを rtSongPos に設定
-rtCurStep = 0（セル先頭から再生）
+rtCurStep = backStepPos - rtStepAccum（セル内オフセット）  // v7.6修正
 ```
 
-BackとRTは**独立して進行**するが、途中再生時はBackの開始ステップ位置からRTの対応セルを計算して同期する。
+BackとRTは**独立して進行**するが、途中再生時はBackの開始ステップ位置からRTの対応セル**およびセル内オフセット**を計算して同期する。
 
 ### ループ判定（v7.5〜）
 
@@ -448,11 +447,12 @@ if (rtLoop && rtSongPos > rtLoop.end) rtSongPos = rtLoop.start;
 
 ---
 
-## 13. RT命名規則（v7.5〜）
+## 13. RT命名規則（v7.5〜 / v7.6統一）
 
 - **新規RTパターン名**: 小文字 `a, b, c, ... z, a2, b2, ...`（v7.1以前は `RA, RB, ...`）
+- **初期パターン・リセット・旧プロジェクトLoad**: `a`（v7.6で `RA` → `a` に統一）
 - **Backパターン名**: 大文字 `A, B, C, ...`（変更なし）
-- 既存パターンの名前は自動変更されない
+- 既存プロジェクトのパターン名は自動変更されない
 
 ---
 
@@ -517,6 +517,23 @@ Song cell span、repackEvents位置保持、Poolフィルタリング、Step gri
 - **bugfix**: セル削除時に `loopPoints` をセルインデックスではなくステップ数で正しくシフトするように修正
 - **bugfix**: スコア生成にも `groupRepeat` 情報を表示するように修正
 
+### v7.6（2026-03-20）
+- **RT途中再生オフセット修正**
+  - `doSongPlay()` で `rtCurStep = backStepPos - rtStepAccum` に変更
+  - Back/RTでパターン長が異なる場合もセル内の正確な位置から再生
+- **RT命名小文字統一**
+  - 初期宣言・Song CLR・旧プロジェクトLoad の `makeRTPattern('RA')` → `makeRTPattern('a')` に統一（3箇所）
+- **手動改行修正**
+  - `computeSongRowGroups()` の `chunk()` が `lineBreak` を認識して実際に行を分割
+  - 再度Enterで解除すると行が元に戻る（トグル完全動作）
+- **カラーパレット刷新**
+  - 28色ボタン → HSLグラデーションバー + ネイティブカラーピッカー + 現在色スウォッチ + ✕クリアボタン
+  - `sectionColor` にHEX値を直接格納（旧プリセット名との後方互換あり）
+  - `applySectionColor()` 関数を新設（Back/RT共通）
+  - `createSongCell()` でHEX直接色とプリセット名の両方に対応
+- **bugfix**: ブランクセルの `secColor` → `sectionColor` typoを修正
+- **bugfix**: deselectハンドラにカラーピッカー関連要素を追加（色選択時にセルが非選択にならない）
+
 ---
 
 ## 15. 既知の注意点
@@ -538,8 +555,10 @@ Song cell span、repackEvents位置保持、Poolフィルタリング、Step gri
 15. Song cell複数選択（`songMultiSelect`/`rtSongMultiSelect`）は Shift+クリックで操作
 16. LOOPボタンはアイコンのみ（↻）。`active` クラスで色が変わることでON/OFFを明示
 17. `renderSongLane()` / `renderRTSongLane()` は `renderInterleavedSong()` のラッパー（v7.5〜）
-18. セル背景色CSSは動的生成。`SEC_COLOR_MAP` に色を追加するだけで拡張可能（v7.5〜）
+18. セル背景色は `sectionColor` にHEX値（`'#rrggbb'`）または旧プリセット名を格納。`createSongCell()` で両方に対応（v7.6〜）
 19. ↓ COPY でクリップボードAPI不可時は `prompt()` フォールバック
+20. `computeSongRowGroups()` の `chunk()` は `lineBreak` を認識して行分割する（v7.6〜）
+21. `applySectionColor()` はBack/RT共通。`lastSongFocus` + 複数選択で適用先を判定
 
 ---
 
@@ -549,9 +568,10 @@ Song cell span、repackEvents位置保持、Poolフィルタリング、Step gri
 v6.0〜v7.0     ✅ 完了
 v7.1           ✅ 完了
 v7.5           ✅ 完了（インターリーブSong / ステップ表示 / S2Sコピペ / ステップLoop / パステル28色 / RT小文字 / 途中再生同期 / 手動改行）
+v7.6           ✅ 完了（RT途中再生オフセット / RT小文字統一 / 手動改行修正 / カラーピッカー+グラデーション / secColortypo修正）
 Phase 4+       📋 Undo / span変更時ビジュアルフィードバック
-Phase 5        📋 Mode 2 / 3連混在（ペンディング）
 ペンディング    🔒 クリックノイズ除去 / RT Vary / パターン一括transpose
+Phase 5        📋 Mode 2 / 3連混在（ペンディング）
 ```
 
 ---
